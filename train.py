@@ -54,9 +54,13 @@ def make_env(rank: int, seed: int = 42):
         # Volvemos al entrenamiento fantasma (sin pantalla) para evitar el "juego pillado" en Windows.
         # Usa enjoy.py en otra consola si quieres auditar la conducción.
         base_env = gym.make("CarRacing-v3", render_mode=None)
-        # Le damos los "ojos" reales a la IA usando GrayScale
-        env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=True)
-        env = RewardShapingWrapper(env_state)
+        # Le damos los "ojos" reales a la IA usando GrayScale (sin dimensión extra)
+        env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=False)
+        
+        # Frame Stacking: Apilamos 4 fotogramas para que el coche tenga memoria temporal
+        env_stack = gym.wrappers.FrameStackObservation(env_state, stack_size=4)
+        
+        env = RewardShapingWrapper(env_stack)
         
         # EL SECRETO PARA TENSORBOARD: El wrapper Monitor
         # SB3 necesita este wrapper para llevar la cuenta de la puntuación total 
@@ -70,13 +74,16 @@ def make_env(rank: int, seed: int = 42):
 import os
 
 def train() -> None:
-    # --- ARQUITECTURA MULTI-AGENTE (Tu idea implementada) ---
-    num_cars = 6  # Levantaremos 6 universos paralelos (ajusta según los núcleos de tu CPU)
+    # --- ARQUITECTURA MULTI-AGENTE ---
+    # Ryzen 5 3600 tiene 12 hilos lógicos. 12 es el límite físico perfecto.
+    num_cars = 12  # Óptimo para Ryzen 5 3600 (6 cores / 12 threads)
     print(f"Desplegando {num_cars} coches en paralelo usando Multiprocesamiento...")
     vec_env = SubprocVecEnv([make_env(i) for i in range(num_cars)])
     
     # --- CONFIGURACIÓN DE APRENDIZAJE CONTINUO ---
-    CONTINUAR_ENTRENAMIENTO = True
+    # ¡ATENCIÓN ARQUITECTO! Como hemos cambiado los ojos a 4 canales (FrameStack),
+    # el cerebro anterior ya no nos sirve. Debemos iniciar desde cero.
+    CONTINUAR_ENTRENAMIENTO = True     
     MODELO_BASE = "ppo_carracing_final"  # Sin la extensión .zip
     
     if CONTINUAR_ENTRENAMIENTO and os.path.exists(MODELO_BASE + ".zip"):
@@ -84,16 +91,38 @@ def train() -> None:
         # cargamos los pesos (conocimientos) del modelo anterior.
         # Es vital pasarle el 'env=vec_env' para que sepa en qué pista va a seguir corriendo.
         print(f"🧠 Cargando cerebro base desde '{MODELO_BASE}'...")
-        model = PPO.load(MODELO_BASE, env=vec_env)
+        # ¡IMPORTANTE! Al cargar un modelo existente, SB3 usa los hiperparámetros guardados.
+        # Para forzar a que use los nuevos parámetros de la Titan Xp, pasamos custom_objects.
+        custom_args = {
+            "n_steps": 4096,
+            "batch_size": 4096
+        }
+        model = PPO.load(MODELO_BASE, env=vec_env, custom_objects=custom_args)
         # Nota: Al cargar, PPO recuerda su learning_rate y estado previo.
     else:
         print("🌱 Iniciando un cerebro completamente nuevo (Tabula Rasa)...")
-        # --- HIPERPARÁMETROS PPO (El cerebro de la IA) ---
+        # --- HIPERPARÁMETROS PPO (Modo GPU ) ---
         model = PPO(
-            policy="CnnPolicy", # Cambiamos la red a Convolucional (ojos)
+            policy="CnnPolicy",
             env=vec_env,
+            # Forzamos a que PyTorch intente usar la GPU. Si no tienes CUDA, esto dará error.
+            device="cuda",
             learning_rate=3e-4,
-            batch_size=256,
+            
+            # n_steps: Cuántas transiciones recopila CADA clon antes de actualizar la red.
+            # Al subirlo a 2048 (default) o 4096, le damos muchísimos más "datos posibles" 
+            # de una sola vez a la GPU para que aprenda trayectorias largas de curvas.
+            n_steps=4096,  # Sincronizado con custom_objects para consistencia total
+            
+            # batch_size: La cantidad de fotogramas que la GPU mastica de golpe.
+            # En CPU 256 está bien, pero en GPU podemos subir a 1024 o 2048 para 
+            # paralelizar cálculos matriciales masivos y aprender rapidísimo.
+            batch_size=4096,
+            
+            # ent_coef: Coeficiente de entropía. Le damos un toque (0.01) para forzar
+            # al coche a explorar más y no quedarse atascado en ir solo en línea recta.
+            ent_coef=0.01,
+            
             verbose=1,
             tensorboard_log="./ppo_carracing_tensorboard/"
         )

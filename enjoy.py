@@ -15,8 +15,9 @@ def enjoy() -> None:
     # 1. Cargamos el entorno original.
     # ESTA VEZ SÍ usamos render_mode="human" para poder ver a nuestra IA conduciendo.
     base_env = gym.make("CarRacing-v3", render_mode="human")
-    env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=True)
-    env = RewardShapingWrapper(env_state)
+    env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=False)
+    env_stack = gym.wrappers.FrameStackObservation(env_state, stack_size=4)
+    env = RewardShapingWrapper(env_stack)
     
     print("Cargando el cerebro del coche...")
     try:

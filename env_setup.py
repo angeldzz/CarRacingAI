@@ -22,40 +22,46 @@ class RewardShapingWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         
         # En CarRacing, action es un array continuo: [volante, gas, freno]
+        steering = float(action[0])
         gas = float(action[1])
         brake = float(action[2])
         
+        # --- NUEVO: REWARD HACKING SOLUCIONADO ---
+        # Lección RL: Si castigamos el volante siempre, el coche preferirá irse 
+        # recto a la hierba para evitar el castigo. ¡Solo castigamos el DERRAPE!
+        steering_penalty = 0.0
+        if gas > 0.5 and abs(steering) > 0.5:
+            steering_penalty = 0.1  # Solo hay multa si intentas tomar curvas cerradas acelerando a fondo
+            
+        reward -= steering_penalty
+
         # CarRacing da puntos positivos solo si pisas asfalto nuevo.
         if reward <= 0:
-            # NO está pisando pista nueva (está en césped, yendo al revés, o parado)
             self.frames_without_progress += 1
             
-            # Castigo natural base
-            reward -= 0.1 
-            
             # LA LAVA (Castigo Progresivo Limitado):
-            # Calculamos la penalización, pero la "topamos" (cap) para que no sea infinita.
-            # Si el castigo es demasiado grande matemáticamente (-3000 pts), la Red Neuronal colapsa.
-            penalty = self.frames_without_progress * 0.05
-            if penalty > 2.0:
-                penalty = 2.0
+            penalty = self.frames_without_progress * 0.005
+            if penalty > 1.0:
+                penalty = 1.0
             reward -= penalty
             
             # MUERTE SÚBITA (Early Stopping):
-            # Si lleva 50 fotogramas (aprox 1 segundo) fuera de la pista sin hacer progreso,
-            # cortamos el episodio. Es mejor reiniciar que dejarlo acumular miles de puntos negativos.
-            if self.frames_without_progress >= 50:
+            if self.frames_without_progress >= 200:
                 terminated = True
-                reward -= 20  # Castigo final por perderse
+                reward -= 20  # Castigo por perderse definitivamente
 
-            
         else:
             # ¡Está pisando asfalto nuevo (progresando)! 
-            # Reseteamos el contador porque ha vuelto a la zona segura
             self.frames_without_progress = 0
             
-            # Solo aquí, en la zona segura, le damos puntos extra por acelerar
+            # Premiamos ligeramente si va acelerando cuando lo hace bien (rectas)
             reward += (gas * 0.1)
+            
+            # --- NUEVO: PREMIO POR CURVA PERFECTA (EL APEX) ---
+            # Si pisa asfalto nuevo, está girando el volante (está en una curva),
+            # NO está frenando (mantiene la inercia) y NO está derrapando (volante suave <= 0.5)
+            if 0.15 < abs(steering) <= 0.5 and brake == 0.0:
+                reward += 0.5  # Premio por trazar de forma suave y eficiente
             
         return obs, float(reward), terminated, truncated, info
 
@@ -64,12 +70,16 @@ def main() -> None:
     # Usamos render_mode="human" para poder auditar visualmente el comportamiento del agente.
     base_env = gym.make("CarRacing-v3", render_mode="human")
     
-    # Aplicamos nuestros Wrappers al entorno base en formato de "Cebolla" (Capas)
     # 1. Extraemos el estado visual (Fase 2 - Redux)
-    # keep_dim=True mantiene la forma (96, 96, 1) en lugar de (96, 96), lo cual es crítico para CnnPolicy
-    env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=True)
-    # 2. Modificamos las recompensas (Fase 3)
-    env = RewardShapingWrapper(env_state)
+    # keep_dim=False quita el canal extra, dejando la imagen 2D (96, 96)
+    env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=False)
+    
+    # 2. Frame Stacking: Apilamos los últimos 4 fotogramas para dotar al coche
+    # de inercia y velocidad (Violación de Markov resuelta). Forma final: (4, 96, 96)
+    env_stack = gym.wrappers.FrameStackObservation(env_state, stack_size=4)
+    
+    # 3. Modificamos las recompensas (Fase 3)
+    env = RewardShapingWrapper(env_stack)
     
     # Por qué resetear: Los Procesos de Decisión de Markov (MDP) requieren un estado inicial.
     # El seed=42 fija la aleatoriedad de la pista para garantizar reproducibilidad en pruebas.
