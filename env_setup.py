@@ -14,7 +14,8 @@ class RewardShapingWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env) -> None:
         super().__init__(env)
         self.frames_without_progress = 0
-        self.consecutive_progress_frames = 0  # Racha de éxito continuo
+        self.consecutive_progress_frames = 0
+        self.total_progress_frames = 0  # Total de frames en pista en este episodio
 
     def step(self, action: Any):
         obs, reward, terminated, truncated, info = self.env.step(action)
@@ -29,50 +30,45 @@ class RewardShapingWrapper(gym.Wrapper):
         if reward > 0:
             self.frames_without_progress = 0
             self.consecutive_progress_frames += 1
+            self.total_progress_frames += 1
 
-            # Premio por velocidad: cuanto más gas mientras avanza, mejor.
-            # Incentiva no ir demasiado despacio en las rectas.
-            speed_bonus = gas * 0.15
-            reward += speed_bonus
+            reward += gas * 0.15  # Premio por velocidad sostenida
 
-            # Premio por trazada suave en curva:
-            # Condición: girando (> 0.1), sin derrapar (< 0.6), freno suave (< 0.3).
-            # Usamos < 0.3 en lugar de == 0.0 para que funcione con acciones continuas reales.
             in_curve    = abs(steering) > 0.1
             smooth_turn = abs(steering) < 0.6
             light_brake = brake < 0.3
             if in_curve and smooth_turn and light_brake:
                 reward += 0.4  # Trazada limpia: el Apex
 
-            # Premio por racha: si lleva mucho tiempo avanzando sin salirse,
-            # le damos un pequeño bonus acumulativo que fomenta completar circuitos enteros.
-            if self.consecutive_progress_frames > 100:
-                reward += 0.1
+            # Premio por racha larga sin salirse (supervivencia sostenida)
+            if self.consecutive_progress_frames > 200:
+                reward += 0.2
 
-        # ================================================================
-        # BLOQUE 2: ESTANCAMIENTO (reward <= 0 = hierba, frenado, girando sin avanzar)
-        # ================================================================
         else:
             self.consecutive_progress_frames = 0
             self.frames_without_progress += 1
 
-            # Castigo progresivo muy suave al principio (no asustamos al coche en curvas lentas)
-            # pero que crece hasta un máximo de 1.0 para evitar que se quede parado indefinidamente.
             penalty = min(self.frames_without_progress * 0.003, 1.0)
             reward -= penalty
 
-            # MUERTE SÚBITA: Aumentamos a 300 frames (~6 segundos a 50 FPS).
-            # Crucial para circuitos aleatorios con curvas muy cerradas donde el coche
-            # necesita frenar mucho y el progreso es naturalmente lento.
             if self.frames_without_progress >= 300:
                 terminated = True
-                reward -= 15  # Penalización de salida clara, pero no catastrófica
+                reward -= 15
+
+        # --- PREMIO POR COMPLETAR EL CIRCUITO ---
+        # CarRacing termina naturalmente (terminated=True) cuando el coche completa el 95% del circuito.
+        # Si la muerte NO fue por nuestra regla (frames<300) sino por terminación natural,
+        # significa que completó la pista. Es el logro más grande que podemos premiar.
+        if terminated and self.frames_without_progress < 300:
+            laps_bonus = min(self.total_progress_frames * 0.05, 100.0)
+            reward += laps_bonus  # Premio proporcional al recorrido completado
 
         return obs, float(reward), terminated, truncated, info
 
     def reset(self, **kwargs):
         self.frames_without_progress = 0
         self.consecutive_progress_frames = 0
+        self.total_progress_frames = 0
         return self.env.reset(**kwargs)
 
 

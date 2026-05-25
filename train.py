@@ -90,15 +90,18 @@ def train() -> None:
         # El "Por qué": En lugar de inicializar la red neuronal con pesos aleatorios,
         # cargamos los pesos (conocimientos) del modelo anterior.
         # Es vital pasarle el 'env=vec_env' para que sepa en qué pista va a seguir corriendo.
-        print(f"🧠 Cargando cerebro base desde '{MODELO_BASE}'...")
-        # ¡IMPORTANTE! Al cargar un modelo existente, SB3 usa los hiperparámetros guardados.
-        # Para forzar a que use los nuevos parámetros de la Titan Xp, pasamos custom_objects.
+        print(f"🧠 Cargando cerebro base desde '{MODELO_BASE}' [MODO FINE-TUNING]...")
+        # FASE DE FINE-TUNING (>4M pasos):
+        # Reducimos ent_coef 0.01 -> 0.003: ya no necesitamos explorar, queremos explotar.
+        # Un std=1.2 a 5M pasos indica que ent_coef alto impide converger hacia acciones precisas.
+        # Reducimos learning_rate 3e-4 -> 1e-4: ajustes más finos, sin borrar lo ya aprendido.
         custom_args = {
             "n_steps": 4096,
-            "batch_size": 4096
+            "batch_size": 4096,
+            "ent_coef": 0.0,   # std=1.22 CONGELADO: dejamos de pagar por el caos
+            "learning_rate": 1e-4,
         }
         model = PPO.load(MODELO_BASE, env=vec_env, custom_objects=custom_args)
-        # Nota: Al cargar, PPO recuerda su learning_rate y estado previo.
     else:
         print("🌱 Iniciando un cerebro completamente nuevo (Tabula Rasa)...")
         # --- HIPERPARÁMETROS PPO (Modo GPU ) ---
@@ -119,8 +122,7 @@ def train() -> None:
             # paralelizar cálculos matriciales masivos y aprender rapidísimo.
             batch_size=4096,
             
-            # ent_coef: Coeficiente de entropía. Le damos un toque (0.01) para forzar
-            # al coche a explorar más y no quedarse atascado en ir solo en línea recta.
+            # ent_coef: 0.01 para modelos nuevos (exploración), 0.003 en fine-tuning.
             ent_coef=0.01,
             
             verbose=1,
