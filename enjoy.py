@@ -1,50 +1,44 @@
 import os
-
-# Apagamos los logs ruidosos de TensorFlow
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-# pyrefly: ignore [missing-import]
-import gymnasium as gym
-# pyrefly: ignore [missing-import]
-from stable_baselines3 import PPO
-from env_setup import RewardShapingWrapper
+import gymnasium as gym  # pyrefly: ignore [missing-import]
+import numpy as np  # pyrefly: ignore [missing-import]
+from stable_baselines3 import PPO  # pyrefly: ignore [missing-import]
+from env_setup import build_env
 import time
+from collections import deque
+
 
 def enjoy() -> None:
-    # 1. Cargamos el entorno original.
-    # ESTA VEZ SÍ usamos render_mode="human" para poder ver a nuestra IA conduciendo.
-    base_env = gym.make("CarRacing-v3", render_mode="human")
-    env_state = gym.wrappers.GrayscaleObservation(base_env, keep_dim=False)
-    env_stack = gym.wrappers.FrameStackObservation(env_state, stack_size=4)
-    env = RewardShapingWrapper(env_stack)
-    
+    env = build_env(render_mode="human")
+
     print("Cargando el cerebro del coche...")
+    modelo = "ppo_carracing_v3"
     try:
-        # 2. Cargamos el modelo entrenado desde el archivo generado por train.py
-        model = PPO.load("ppo_carracing_final")
+        model = PPO.load(modelo)
     except FileNotFoundError:
-        print("¡Error! No se encontró el cerebro. Asegúrate de ejecutar train.py primero.")
+        print(f"No se encontro '{modelo}.zip'. Ejecuta train.py primero.")
         return
-        
+
     obs, info = env.reset()
-    print("¡Piloto automático activado! Disfruta del show.")
-    
-    # 3. Bucle de Inferencia (Inference Loop)
+    frame_stack = deque([obs] * 2, maxlen=2)
+
+    print("Piloto automatico activado!")
+
     while True:
-        # A diferencia del sample() aleatorio, aquí la Red Neuronal toma la decisión.
-        # deterministic=True significa que el modelo tomará la acción que considere más óptima,
-        # sin aplicar ruido de exploración aleatorio.
-        action, _states = model.predict(obs, deterministic=True)
-        
+        stacked_obs = np.concatenate(list(frame_stack), axis=-1)
+        action, _states = model.predict(stacked_obs, deterministic=True)
+
         obs, reward, terminated, truncated, info = env.step(action)
-        
-        # Una pequeña pausa para que los humanos podamos ver los fotogramas a buena velocidad
+        frame_stack.append(obs)
+
         time.sleep(0.02)
-        
+
         if terminated or truncated:
             print("Pista terminada o coche estancado. Reseteando...")
             obs, info = env.reset()
+            frame_stack = deque([obs] * 2, maxlen=2)
 
 if __name__ == "__main__":
     enjoy()
